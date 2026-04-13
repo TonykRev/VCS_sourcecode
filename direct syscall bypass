@@ -1,0 +1,209 @@
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+#include <winternl.h>
+#include <stdio.h>
+
+#pragma comment(lib, "ntdll.lib")
+
+typedef NTSTATUS(NTAPI* pNtCreateFile)(
+    PHANDLE FileHandle,
+    ACCESS_MASK DesiredAccess,
+    POBJECT_ATTRIBUTES ObjectAttributes,
+    PIO_STATUS_BLOCK IoStatusBlock,
+    PLARGE_INTEGER AllocationSize,
+    ULONG FileAttributes,
+    ULONG ShareAccess,
+    ULONG CreateDisposition,
+    ULONG CreateOptions,
+    PVOID EaBuffer,
+    ULONG EaLength
+);
+
+DWORD ExtractSyscallNumber(const char* funcName)
+{
+    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+    if (!ntdll)
+    {
+        printf("[-] Khong the lay ntdll handle!\n");
+        return (DWORD)-1;
+    }
+
+    BYTE* func = (BYTE*)GetProcAddress(ntdll, funcName);
+    if (!func)
+    {
+        printf("[-] Khong tim thay ham: %s\n", funcName);
+        return (DWORD)-1;
+    }
+
+    if (func[0] != 0x4C || func[1] != 0x8B || func[2] != 0xD1 || func[3] != 0xB8)
+    {
+        printf("[!] %s co ve bi HOOK! Byte dau: %02X %02X %02X %02X\n",
+            funcName, func[0], func[1], func[2], func[3]);
+    }
+
+    DWORD syscallNum = *(DWORD*)(func + 4);
+
+    printf("[+] %s -> Syscall number: 0x%02X (decimal: %d)\n",
+        funcName, syscallNum, syscallNum);
+
+    return syscallNum;
+}
+
+pNtCreateFile BuildSyscallStub(DWORD syscallNumber)
+{
+    BYTE stub[] = {
+        0x4C, 0x8B, 0xD1,
+        0xB8, 0x00, 0x00, 0x00, 0x00,
+        0x0F, 0x05,
+        0xC3
+    };
+
+    *(DWORD*)(stub + 4) = syscallNumber;
+
+    LPVOID execMem = VirtualAlloc(
+        NULL,
+        sizeof(stub),
+        MEM_COMMIT | MEM_RESERVE,
+        PAGE_EXECUTE_READWRITE
+    );
+
+    if (!execMem)
+    {
+        printf("[-] VirtualAlloc that bai! Loi: %lu\n", GetLastError());
+        return NULL;
+    }
+
+    memcpy(execMem, stub, sizeof(stub));
+
+    printf("[*] Syscall stub da duoc xay dung tai: 0x%p\n", execMem);
+    printf("[*] Noi dung stub (11 bytes): ");
+    for (int i = 0; i < 11; i++)
+    {
+        printf("%02X ", ((BYTE*)execMem)[i]);
+    }
+    printf("\n");
+
+    return (pNtCreateFile)execMem;
+}
+
+int main()
+{
+    printf("============================================================\n");
+    printf("  DIRECT SYSCALL BYPASS DEMO\n");
+    printf("  AV/EDR khong the phat hien thao tac nay!\n");
+    printf("============================================================\n\n");
+
+    printf("[BUOC 1] Tim syscall number cho NtCreateFile...\n");
+    DWORD sysnum = ExtractSyscallNumber("NtCreateFile");
+
+    if (sysnum == (DWORD)-1)
+    {
+        printf("[-] That bai! Khong the tim syscall number.\n");
+        return 1;
+    }
+    printf("\n");
+
+    printf("[BUOC 2] Xay dung dynamic syscall stub...\n");
+    pNtCreateFile SysNtCreateFile = BuildSyscallStub(sysnum);
+
+    if (!SysNtCreateFile)
+    {
+        printf("[-] That bai! Khong the xay dung stub.\n");
+        return 1;
+    }
+    printf("\n");
+
+    printf("[BUOC 3] Chuan bi tham so...\n");
+
+    HANDLE fileHandle = NULL;
+    IO_STATUS_BLOCK iosb;
+    ZeroMemory(&iosb, sizeof(iosb));
+
+    UNICODE_STRING uFileName;
+    OBJECT_ATTRIBUTES objAttr;
+
+    RtlInitUnicodeString(&uFileName, L"\\??\\C:\\temp\\syscall_bypass_demo.txt");
+
+    InitializeObjectAttributes(
+        &objAttr,
+        &uFileName,
+        OBJ_CASE_INSENSITIVE,
+        NULL,
+        NULL
+    );
+
+    BOOL dirCreated = CreateDirectoryA("C:\\temp", NULL);
+    if (dirCreated)
+        printf("[*] Da tao thu muc C:\\temp\n");
+    else
+        printf("[*] Thu muc C:\\temp da ton tai san\n");
+    printf("\n");
+
+    printf("[BUOC 4] Goi NtCreateFile bang DIRECT SYSCALL...\n");
+    printf("[*] AV/EDR khong the chen vao buoc nay!\n\n");
+
+    NTSTATUS status = SysNtCreateFile(
+        &fileHandle,
+        FILE_GENERIC_WRITE,
+        &objAttr,
+        &iosb,
+        NULL,
+        FILE_ATTRIBUTE_NORMAL,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        FILE_OVERWRITE_IF,
+        FILE_SYNCHRONOUS_IO_NONALERT,
+        NULL,
+        0
+    );
+
+    printf("[BUOC 5] Kiem tra ket qua...\n");
+
+    if (status == 0)
+    {
+        printf("[+] THANH CONG! File da duoc tao!\n");
+        printf("[+] File handle: 0x%p\n", fileHandle);
+        printf("[+] Kiem tra tai: C:\\temp\\syscall_bypass_demo.txt\n");
+        printf("[+] NTSTATUS: 0x%08X (STATUS_SUCCESS)\n", status);
+
+        CloseHandle(fileHandle);
+    }
+    else
+    {
+        printf("[-] That bai! NTSTATUS: 0x%08X\n", status);
+
+        if (status == 0xC000003A)
+            printf("[-] Goi y: Thu muc C:\\temp co the khong ton tai. Tao tay roi thu lai.\n");
+        else if (status == 0xC0000022)
+            printf("[-] Goi y: Chay lai voi quyen Administrator.\n");
+    }
+
+    VirtualFree(SysNtCreateFile, 0, MEM_RELEASE);
+
+    printf("\n============================================================\n");
+    printf("  BONUS: So sanh voi CreateFile binh thuong\n");
+    printf("============================================================\n");
+    printf("[*] Goi CreateFile thong thuong (AV co the thay)...\n");
+
+    HANDLE normalHandle = CreateFileA(
+        "C:\\temp\\normal_createfile.txt",
+        GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL,
+        CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL
+    );
+
+    if (normalHandle != INVALID_HANDLE_VALUE)
+    {
+        printf("[+] CreateFile binh thuong: THANH CONG\n");
+        printf("[+] Khac biet: CreateFile di qua kernel32.dll -> ntdll.dll (AV co the hook)\n");
+        printf("[+]            Direct Syscall di thang vao kernel (AV KHONG the hook)\n");
+        CloseHandle(normalHandle);
+    }
+
+    printf("\n[*] Hoan thanh! Nhan Enter de thoat...");
+    getchar();
+
+    return 0;
+}
